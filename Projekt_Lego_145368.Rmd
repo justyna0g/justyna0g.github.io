@@ -1,0 +1,402 @@
+---
+title: "Projekt Lego"
+author: "Justyna Grunwald, 145368"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+# Spis treści
+
+-   [Podsumowanie analizy](#summary_of_analisys)
+-   [Przygotowanie danych](#preparation)
+-   [Podsumowanie danych](#summary_of_data)
+-   [Szczegółowa analiza](#detailed_analysis_6)
+-   [Korelacje](#correlations_7)
+-   [Trendy](#trends_9)
+-   [Predykcje](#predictions_10)
+
+# Podsumowanie analizy {#summary_of_analisys}
+
+Grafika prezenująca schemat połączenia tabel , który został zaprezentowany i wzięty ze strony <https://rebrickable.com/>.
+
+```{r graphic}
+knitr::include_graphics(file.path(getwd(), "rebrickable_schema_v3.png"))
+```
+
+**Krótki opis dostępnych tabel:**
+
+-   *inventories*: tabela nadrzędna wiążąca części i figurki z zestawami Lego;
+
+-   *inventory_parts*: zapasy (nakład) części Lego;
+
+-   *parts*: części Lego (niekiedy składające się z kilku klocków);
+
+-   *part_categories*: kategorie części Lego;
+
+-   *part_relationships*: relacje między częściami;
+
+-   *elements*: pojedyncze klocki Lego;
+
+-   *colors*: oficjalne kolory klocków;
+
+-   *inventory_minifigs*: zapasy (nakład) figurek Lego;
+
+-   *minifigs*: figurki Lego;
+
+-   *inventory_sets*: zapasy (nakład) zestawów Lego;
+
+-   *sets*: zestawy dostępne w sklepach;
+
+-   *themes*: oryginalne kategorie zestawów jak i współprace (np. Lego Star Wars);
+
+**W wyniku analizy zaobserwowano:**
+
+Obecność dużej różnorodności motywów i zestawów Lego, co świadczy o bogactwie oferty.
+
+Nieliczne wartości liczbowe w porównaniu do liczby kategorii, co wskazuje na zróżnicowanie danych w aspekcie tematycznym.
+
+Wraz z kolejnymi latami lego staje się coraz bardziej popularne, gdyż produkowana jest coraz większa liczba różnorodnych zestawów klocków.
+
+Tendencja do zwiększania się liczby części w zestawach, co może odzwierciedlać rosnącą skomplikowanie i rozbudowanie oferty produktowej.
+
+Brak jednoznacznie dominującego motywu, jednak zestawy techniczne oraz związane ze światem Star Wars zdają się cieszyć największym zainteresowaniem.
+
+Analiza korelacji między parametrami zestawów Lego wykazała, że istnieje niewielka ujemna korelacja między rokiem produkcji a wersją zestawu, oraz niewielka dodatnia korelacja między ilością części w zestawie a rokiem. Jednak brak silnych zależności między numerem wersji, rokiem produkcji a ilością części w magazynie, co sugeruje, że te czynniki są względnie niezależne od siebie. Inne czynniki lub decyzje projektowe mogą bardziej wpływać na powstawanie nowych zestawów i ich zawartość. Warto rozważyć dodatkowe czynniki lub dane, które pozwoliłyby na dokładniejszą analizę.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE)
+library(ggplot2)
+library(dplyr)
+library(plotly)
+library(flexdashboard)
+library(ggsci)
+library(corrplot)
+library(caret)
+```
+
+# Przygotowanie danych {#preparation}
+
+```{r read_data, cache=TRUE}
+
+current_path <- getwd()
+colors <- read.csv(file.path(current_path, "colors.csv"))
+elements <- read.csv(file.path(current_path, "elements.csv"))
+inventories <- read.csv(file.path(current_path, "inventories.csv"))
+inventory_minifigs <- read.csv(file.path(current_path, "inventory_minifigs.csv"))
+inventory_parts <- read.csv(file.path(current_path, "inventory_parts.csv"))
+inventory_sets <- read.csv(file.path(current_path, "inventory_sets.csv"))
+minifigs <- read.csv(file.path(current_path, "minifigs.csv"))
+part_categories <- read.csv(file.path(current_path, "part_categories.csv"))
+part_relationship <- read.csv(file.path(current_path, "part_relationships.csv"))
+parts <- read.csv(file.path(current_path, "parts.csv"))
+sets <- read.csv(file.path(current_path, "sets.csv"))
+themes <- read.csv(file.path(current_path, "themes.csv"))
+```
+
+```{r cleanup_data}
+
+inventory_parts <- subset(inventory_parts, select = -img_url)
+sets <- subset(sets, select = -img_url, num_parts != 0)
+minifigs <- subset(minifigs, select = -img_url)
+
+#parts
+colnames(inventory_parts) <- c("inventory_id", "part_number", "color_id", "quantity", "is_spare")
+colnames(inventories) <- c("id", "version", "set_number")
+lego_data_parts <- merge(inventory_parts, inventories, by.x = "inventory_id", by.y = "id", all.x = TRUE)
+
+colnames(colors) <- c("color_id", "color_name", "rgb", "is_transparent")
+lego_data_parts <- merge(lego_data_parts, colors, by.x = "color_id", by.y = "color_id", all.x = TRUE)
+
+colnames(parts) <- c("part_number", "part_name", "part_category_id", "part_material")
+lego_data_parts <- merge(lego_data_parts, parts, by.x = "part_number", by.y = "part_number", all.x = TRUE)
+
+colnames(part_categories) <- c("part_category_id", "part_category_name")
+lego_data_parts <- merge(lego_data_parts, part_categories, by.x = "part_category_id", by.y = "part_category_id", all.x = TRUE)
+
+lego_data_parts <- subset(lego_data_parts, select = c(-color_id))
+
+#sets
+colnames(sets) <- c("set_number", "set_name", "year", "theme_id", "number_of_parts_in_set")
+colnames(themes) <- c("theme_id", "theme_name", "theme_parent_id")
+lego_data_sets <- merge(sets, themes, by.x = "theme_id", by.y = "theme_id", all.x = TRUE)
+themes_copy <- themes[,1:2]
+colnames(themes_copy) <- c("theme_id", "theme_parent_name")
+lego_data_sets <- merge(lego_data_sets, themes_copy, by.x = "theme_parent_id", by.y = "theme_id", all.x = TRUE)
+lego_data_sets <- subset(lego_data_sets, select = -theme_parent_id)
+
+#figs
+lego_data_figs <- merge(inventory_minifigs, minifigs, by.x="fig_num", by.y="fig_num")
+colnames(lego_data_figs) <- c("figure_number", "inventory_id", "figure_quantity", "figure_name", "figure_number_of_parts")
+
+
+
+lego_data <- merge(lego_data_parts, lego_data_sets, by.x="set_number", by.y="set_number", all.x = TRUE)
+
+```
+
+# Podsumowanie danych {#summary_of_data}
+
+Poniżej zostały przedstawione kluczowe statystyki dla wykorzystywanych do analiz tabel.
+
+Tabela **lego_data_parts** zawiera informacje dotyczące klocków lego.
+
+Tabela **lego_data_sets** opisuje zestawy lego.
+
+Tabela **lego_data_figs** dostarcza dane na temat figurek.
+
+```{r summary_of_data}
+summary(lego_data_parts)
+
+summary(lego_data_sets)
+
+summary(lego_data_figs)
+```
+
+# Szczegółowa analiza {#detailed_analysis_6}
+
+```{r detailed_analysis_1}
+colors_summary <- data.frame(
+  category = c("Kolory", "Przezroczyste", "Nieprzezroczyste"),
+  count = c(length(unique(colors$color_name)),
+            sum(colors$is_transparent != "f", na.rm = TRUE),
+            sum(colors$is_transparent == "f", na.rm = TRUE))
+)
+o <- ggplot(colors_summary, aes(x = category, y = count, fill = category)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Analiza kolorów", y = "Ilość", x = "Kategoria") +
+  theme_bw() +
+  theme(legend.position = "none")
+ggplotly(o)
+```
+
+Wykres przedstawia rozkład wartości dostępnych kolorów dla klocków lego. Łączna liczba różnych kolorów wynosi 263. To wskazuje na dużą różnorodność dostępnych kolorów, z czego zdecydowana większość kolorów jest nieprzezroczystych.
+
+```{r detailed_analysis_2}
+x <- ggplot(parts, aes(x=part_material, fill=factor(part_material))) + 
+  geom_bar() + 
+  coord_flip() +
+  scale_fill_brewer(palette = "Dark2") +
+  theme_bw() +
+  theme(legend.position="none") + 
+  ggtitle("Części z podziałem na materiał") + 
+  labs(y = "Ilość [sztuki]", x = "Nazwy")
+ggplotly(x)
+
+filtered_parts <- parts[parts$part_material != "Plastic", ]
+
+ggplot(filtered_parts, aes(x=part_material, fill=factor(part_material))) +
+  geom_bar() + 
+  coord_flip() +
+  scale_fill_brewer(palette = "Dark2") +
+  theme_bw() +
+  theme(legend.position="none") + 
+  ggtitle("Części z podziałem na materiał, bez plastiku") + 
+  labs(y = "Ilość [jednostki]", x = "Nazwy")
+```
+
+Wykres przedstawia rozkład ilości różnych części Lego z podziałem na materiał, z których są wykonane. Każdy prostokąt reprezentuje jedną kategorię materiału, a wysokośćs odzwierciedla ilość części w danej kategorii. Najwięcej części wykonanych jest z plastiku, co jest typowym materiałem dla klocków Lego. Drugi wykres przedstawia te same wartości, ale z pominięciem najpopularniejszego materiału. Ma to na celu skupienie uwagi na innych materiałach, które mogą stanowić mniejszą część całkowitej kolekcji, ale są istotne z perspektywy różnorodności.
+
+```{r detailed_analysis_3}
+theme_counts <- lego_data_sets %>% filter(!is.na(theme_name)) %>% group_by(theme_name) %>% summarise(count = n())
+top_themes <- theme_counts %>% top_n(20, count)
+other_count <- theme_counts %>%
+  anti_join(top_themes, by = "theme_name") %>%
+  summarise(count = sum(count), theme_name = "Other")
+combined_themes <- bind_rows(top_themes, other_count)
+
+plot_ly(combined_themes, labels = ~theme_name, values = ~count, type = 'pie',
+         textinfo = 'value+percent', hoverinfo = 'text') %>%
+     layout(title = "20 Najbardziej popularnych motywów", height=400, width=600)
+
+```
+
+Na przestrzeni lat powstało bardzo dużo różnych zestawów lego, co wpływa na różnorodność dostępnych motywów. Dla zwiększenia czytelnośći wykresu, zostało wybranych 20 najpopularniejszych motywów. Sumaryczna ilość pozostałych motywów znajduje się w kategorii Other, procenty na wykresie wyliczane są automatycznie w odniesieniu do wartości pokazanych na wykresie.
+
+*Wnioski:*
+
+Żaden z motywów nie jest szczególnie popularny, ale 3 najbardziej popularne to: Technic, Star Wars i Friends.
+
+```{r detailed_analysis_4}
+theme_set_counts <- lego_data %>%
+  group_by(theme_name) %>%
+  summarise(set_count = n_distinct(set_name), quantity=sum(quantity)) %>%
+  arrange(desc(set_count))
+
+p <- ggplot(theme_set_counts[1:20,], aes(x = reorder(theme_name, -set_count), y = set_count, fill=quantity)) +
+  geom_col() +
+  scale_fill_gradient(low = "blue", high = "red", labels = scales::label_number()) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(title = "Analiza 20 najpopularniejszych motywów", x = "Motyw", y = "Ilość zestawów", fill = "Ilość części") +
+  coord_flip()
+
+ggplotly(p)
+```
+
+Wykres przedstawia 20 najpopularniejszych motywów zestawów Lego, wraz z oznaczeniem, w formie graficznej, ilośći części. Dzięki interaktywnemu formatowi wykresu można łatwo sprawdzić informacje o poszczególnych motywach.
+
+*Wnioski:*
+
+Analiza wykresu pozwala zauważyć zależność między sumaryczną ilością części a popularnością motywu. Obserwuje się, że im większa liczba zestawów jest produkowana w danym motywie, tym większa jest również ilość przypisanych do nich części. Nie obserwuje się tej zależności dla wszystkich motywów, a jednym z wyjątków jest motyw Books. Pomimo posiadania dużej liczby zestawów, charakteryzują się one niewielką ilością części.
+
+# Korelacje {#correlations_7}
+
+Przy liczeniu korelacji używany był parametr *complete.obs*, który nie bierze pod uwagi wartości pustych w obu wartościach. Z analizy zostały usunięte identyfikatory obiektów.
+
+```{r correlations}
+
+numeric_columns <- sapply(lego_data, is.numeric)
+cor_matrix <- cor(lego_data[, numeric_columns], use = "complete.obs")
+columns_to_remove <- grepl("id", colnames(cor_matrix))
+cor_matrix_filtered <- cor_matrix[!columns_to_remove, !columns_to_remove]
+corrplot(cor_matrix_filtered, method = "color")
+corrplot(cor_matrix_filtered, method = "number")
+```
+
+Analizując macierz korelacji, można zauważyć kilka interesujących relacji między parametrami zestawów Lego:
+
+1.  Istnieje niewielka ujemna korelacja między rokiem produkcji zestawu a jego wersją (-0.13).
+2.  Korelacja między wersją zestawu lub rokiem a ilością części w zestawie jest bliska zeru (0.01, 0.0).
+3.  Mamy niewielką dodatnią korelację między ilością części w zestawie a rokiem wykonania (0.25).
+4.  Brak wyraźnej korelacji między ilością części w zestawie a wersją czy ilością części w magazynie(0.05, 0.17).
+
+```{r correlations_2}
+ggplot(lego_data, aes(x = year, y = number_of_parts_in_set)) +
+  geom_point(color = "#69453d") +
+  geom_smooth(method = "lm", se = FALSE, color = "#fa8072") +
+  geom_text(aes(label = paste("Korelacja: ", round(cor(year, number_of_parts_in_set, use = "complete.obs"), 2))),
+            x = Inf, y = -Inf, hjust = 1, vjust = 0, size = 4) +
+  labs(title = "", x = "Rok", y = "Części w zestawie") +
+  theme_bw()
+```
+
+Wykres przedstawia zależność między rokiem produkcji a ilością części w zestawie Lego. Każdy punkt na wykresie reprezentuje pojedynczy zestaw Lego, gdzie oś X to rok produkcji, a oś Y to ilość części w zestawie. Krzywa regresji liniowej została dodana, aby zobaczyć ogólny kierunek tej zależności. Mimo korelacji, można zauważyć znaczny rozrzut punktów, co oznacza, że istnieją pewne wyjątki od ogólnego trendu. Nie można jednoznacznie przewidzieć ilości części w zestawie na podstawie tylko roku produkcji. Analiza wykresu wskazuje, że choć istnieje pewna zależność między rokiem produkcji a ilością części w zestawie, to nie jest to jedyny czynnik wpływający na tę relację. Rozrzut punktów sugeruje, że inne czynniki, takie jak motyw zestawu czy specyfikacja danej serii, mogą również mieć istotny wpływ na zawartość poszczególnych zestawów Lego.
+
+# Trendy {#trends_9}
+
+```{r trends, warning=FALSE}
+
+ggplot(lego_data_sets, aes(x = year)) +
+  geom_point(stat = "count", fill = "skyblue") +
+  geom_smooth(stat = "count", method = "lm", color = "pink") +
+  labs(title = "Liczba zestawów zaprojektowanych na rok", x = "Rok", y = "Liczba zestawów") +
+  theme_bw()
+
+```
+
+Na wykresie zaznaczona jest liczba zestawów opracowanych w poszczególnych latach. Wyraźnie dostrzegalny jest ogólny trend wzrostowy, choć można również zaobserwować okresy, w których liczba nowych zestawów na rok wykazuje spadek. Przykładowo, można zauważyć obniżenie się liczby nowych zestawów od 2022 do 2027 roku oraz od 2021 do 2023 roku.
+
+```{r trends_2, warning=FALSE}
+ggplot(lego_data_sets, aes(x = year, y = number_of_parts_in_set, color = factor(theme_parent_name))) +
+  geom_point() +
+  geom_smooth(method = "lm", color = "blue") +
+  labs(title = "Liczba części w zestawach w latach", x = "Rok", y = "Liczba części") +
+  theme_bw() +
+  theme(legend.position="none")
+```
+
+Wykres przedstawia zmiany w liczbie części w zestawach Lego na przestrzeni lat. Każdy punkt na wykresie reprezentuje zestaw w danym roku, a kolor oznacza przynależność do określonej kategorii tematycznej. W miarę upływu lat można zauważyć, że niektóre zestawy stają się bardziej rozbudowane pod względem liczby części. Wykres pozwala zobaczyć ewolucję zawartości częściowej zestawów Lego w odniesieniu do czasu. Legenda została usunięta dla poprawienia czytelności wykresu. Kolor szary oznacza zestaw bez nadrzędnego motywu.
+
+```{r trends_3, warning=FALSE}
+filtered_data <- subset(lego_data_sets, !is.na(theme_parent_name))
+m <- ggplot(filtered_data, aes(x = year, y = number_of_parts_in_set, color = factor(theme_parent_name))) +
+  geom_point() +
+  geom_smooth(method = "lm", color = "blue") +
+  labs(title = "Liczba części w zestawach, tylko z nadrzędnym motywem", x = "Rok", y = "Liczba części") +
+  theme_bw()
+ggplotly(m)
+```
+
+Analizowany wykres prezentuje liczbę części w zestawach Lego na przestrzeni lat, skupiając się jedynie na zestawach posiadających określony nadrzędny motyw. Kolory oznaczają przynależność do różnych kategorii tematycznych. Wykres pozwala zobaczyć ewolucję zawartości częściowej zestawów Lego z wybranymi motywami w kontekście czasu. Najpopularniejszym motywem nadrzędnym jest Star wars, co pokrywa się z poprzednimi wnioskami, w kontekście popularności motywów.
+
+```{r trends_4}
+avg_parts_per_year <- lego_data_sets %>%
+  group_by(year) %>%
+  summarise(avg_parts = mean(number_of_parts_in_set, na.rm = TRUE))
+median_parts_per_year <- lego_data_sets %>%
+  group_by(year) %>%
+  summarise(median_parts = median(number_of_parts_in_set, na.rm = TRUE))
+
+v <- ggplot(lego_data_sets, aes(x = year)) +
+  geom_point(stat = "count", color = "orange") +
+  geom_line(data = avg_parts_per_year, aes(y = avg_parts, color = "Średnia ilość części"), show.legend = TRUE) +
+  geom_line(data = median_parts_per_year, aes(y = median_parts, color = "Mediana ilości części"), show.legend = TRUE) +
+  scale_color_manual(values = c("#fb4d46", "#91b776"), labels = c("Mediana ilości części","Średnia ilość części")) +
+  labs(title = "Liczba zestawów zaprojektowanych na rok", x = "Rok", y = "Liczba zestawów", color="Legenda") +
+  theme_bw() +
+  theme(legend.position = "right")
+ggplotly(v)
+```
+
+Prezentowany wykres przedstawia liczbę zestawów zaprojektowanych na każdy rok, uwzględniając średnią i medianę ilości części w tych zestawach. Każdy punkt reprezentuje rok, a wartości punktowe oznaczają liczbę zestawów. Linie trendu dla średniej i mediany ilości części pozwalają zobaczyć, jak zmieniała się średnia i mediana zawartości klocków w zestawach Lego na przestrzeni lat.
+
+# Predykcje {#predictions_10}
+
+```{r predictions_10}
+count_per_year <- lego_data_sets %>%
+  group_by(year) %>%
+  summarize(count = n())
+sets_data_per_year <- merge(count_per_year, avg_parts_per_year, by.x = "year", by.y = "year", all.x = TRUE)
+sets_data_per_year <- merge(sets_data_per_year, median_parts_per_year, by.x = "year", by.y = "year", all.x = TRUE)
+
+years <- sort(unique(lego_data_sets$year))
+next_years <- (max(years)+1):2040
+
+lm_count <- lm(count ~ year, data = sets_data_per_year)
+lm_avg <- lm(avg_parts ~ year, data = sets_data_per_year)
+lm_median <- lm(median_parts ~ year, data = sets_data_per_year)
+predict_data_lm <- data.frame(year = next_years)
+predict_data_lm$count <- predict(lm_count, newdata = predict_data_lm)
+predict_data_lm$avg_parts <- predict(lm_avg, newdata = predict_data_lm)
+predict_data_lm$median_parts <- predict(lm_median, newdata = predict_data_lm)
+predict_data_lm <- rbind(predict_data_lm, data.frame(year=2023, count=sets_data_per_year$count[73],
+                                                     avg_parts=sets_data_per_year$avg_parts[73],
+                                                     median_parts=sets_data_per_year$median_parts[73]))
+
+
+set.seed(111)
+predict_data_rf <- data.frame(year=count_per_year[73,1],count=count_per_year[73,2])
+count_per_year_copy <- count_per_year
+for (predcit_year in next_years){
+  tree_model <- train(count ~ .,
+                    data = count_per_year_copy,
+                    method = "rf",
+                    ntree=4)
+  next_year_data <- data.frame(year=predcit_year)
+  predictions <- predict(tree_model, newdata = next_year_data)
+  result <- cbind(next_year_data, count = predictions)
+  predict_data_rf <- rbind(predict_data_rf, result)
+  count_per_year_copy <- rbind(count_per_year_copy, result)
+}
+
+
+
+p <- ggplot(lego_data_sets, aes(x = year)) +
+  geom_point(stat = "count", aes(color = "Ilość zestawów")) +
+  geom_line(data = avg_parts_per_year, aes(y = avg_parts, color = "Średnia ilość części"), show.legend = TRUE) +
+  geom_line(data = median_parts_per_year, aes(y = median_parts, color = "Mediana ilości części"), show.legend = TRUE) +
+  geom_point(data = predict_data_lm, aes(y = count, color = "Predykcja ilośći części - lm"), show.legend = TRUE) +
+  geom_point(data = predict_data_rf, aes(y = count, color = "Predykcja ilośći części - rf"), show.legend = TRUE) +
+  geom_line(data = predict_data_lm, aes(y = avg_parts, color = "Średnia ilość części - lm"), show.legend = TRUE) +
+  geom_line(data = predict_data_lm, aes(y = median_parts, color = "Mediana ilości części - lm"), show.legend = TRUE) +
+  labs(title = "Obiekty na rok", x = "Rok", y = "Sztuki", color = "Legenda") +
+  scale_color_manual(values = c("orange", "#fb4d46", "#800000", "#3ebbbd", "#91b776", "#00ff7f", "#008080"), 
+                     labels = c("Ilość zestawów", "Średnia ilość części", "Predykcja ilośći części - lm", "Predykcja ilośći części - rf", "Mediana ilości części", "Średnia ilość części - lm", "Mediana ilości części - lm")) +
+  theme_bw()
+ggplotly(p)
+```
+
+Prezentowany wykres stanowi kompleksową analizę ilości zestawów Lego i ilości części na przestrzeni lat, uwzględniając prognozy oparte na modelu regresji liniowej.\
+Wykres ukazuje ogólną tendencję wzrostową w ilości zestawów Lego w kolejnych latach, co pokrywa się z predykcjami pokazanymi w kolejnych latach.
+
+# Wykorzystane biblioteki {#used_libraries}
+
+```{r used_libraries}
+count_used_libraries <- function() {
+  loaded_libraries <- names(sessionInfo()$loadedOnly)
+  print(paste("Number of loaded libraries: ", length(loaded_libraries)))
+  print("Loaded libraries:")
+  print(paste(loaded_libraries, collapse = ", "))
+}
+
+count_used_libraries()
+```
